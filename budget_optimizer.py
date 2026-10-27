@@ -1,31 +1,12 @@
-"""Budget allocation recommendation engine.
-
-Approach
---------
-1. Aggregate history to platform-day totals (spend, revenue).
-2. Fit a diminishing-returns response curve per platform:
-
-       revenue = a * spend ^ b        (0 < b < 1)
-
-   estimated by log-log least squares, then calibrated so the curve reproduces
-   each platform's average historical daily revenue at its average daily spend.
-3. Allocate the total daily budget in small increments, always giving the next
-   slice to the platform with the highest marginal revenue. For concave curves
-   this greedy procedure is optimal.
-4. Minimum and maximum platform shares keep the plan realistic.
-"""
-
 from __future__ import annotations
-
 from dataclasses import dataclass
-
+import math
 import numpy as np
 import pandas as pd
 
 MIN_ELASTICITY = 0.05
 MAX_ELASTICITY = 0.98
 MIN_OBSERVATIONS = 10
-
 
 @dataclass
 class ResponseCurve:
@@ -36,13 +17,10 @@ class ResponseCurve:
     n_obs: int
     avg_daily_spend: float
     avg_daily_revenue: float
-
     def revenue(self, spend: float) -> float:
-        return self.a * max(spend, 1e-9) ** self.b
-
+        return self.a * max(float(spend), 1e-9) ** self.b
     def marginal_revenue(self, spend: float) -> float:
-        return self.a * self.b * max(spend, 1e-9) ** (self.b - 1)
-
+        return self.a * self.b * max(float(spend), 1e-9) ** (self.b - 1)
 
 @dataclass
 class AllocationResult:
@@ -50,132 +28,123 @@ class AllocationResult:
     total_daily_budget: float
     current_revenue: float
     recommended_revenue: float
-
     @property
     def uplift_pct(self) -> float:
-        return (self.recommended_revenue / self.current_revenue - 1) * 100
-
+        return (self.recommended_revenue / self.current_revenue - 1) * 100 if self.current_revenue > 0 else float("nan")
     @property
     def current_roas(self) -> float:
         return self.current_revenue / self.total_daily_budget
-
     @property
     def recommended_roas(self) -> float:
         return self.recommended_revenue / self.total_daily_budget
 
-
 class BudgetOptimizer:
-    def __init__(self, min_share: float = 0.05, max_share: float = 0.40,
-                 steps: int = 2000) -> None:
-        if not 0 <= min_share <= max_share <= 1:
-            raise ValueError("Require 0 <= min_share <= max_share <= 1")
-        self.min_share = min_share
-        self.max_share = max_share
-        self.steps = steps
+    def __init__(self, min_share: float = .05, max_share: float = .40, steps: int = 2000):
+        if not (math.isfinite(min_share) and math.isfinite(max_share) and 0 <= min_share <= max_share <= 1):
+            raise ValueError("Shares must satisfy 0 <= min_share <= max_share <= 1.")
+        if not isinstance(steps, int) or isinstance(steps, bool) or steps < 100:
+            raise ValueError("steps must be an integer >= 100.")
+        self.min_share, self.max_share, self.steps = float(min_share), float(max_share), steps
         self.curves: dict[str, ResponseCurve] = {}
 
     def fit(self, daily: pd.DataFrame) -> "BudgetOptimizer":
-        """Fit response curves from platform-day rows (platform, date, spend, revenue)."""
+        required = {"platform", "spend", "revenue"}
+        missing = required - set(daily.columns)
+        if missing:
+            raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
+        if daily.empty:
+            raise ValueError("Cannot fit optimizer on an empty dataset.")
         self.curves = {}
         for platform, group in daily.groupby("platform", observed=True):
-            usable = group[(group["spend"] > 0) & (group["revenue"] > 0)]
+            usable = group.loc[
+                np.isfinite(group["spend"]) & np.isfinite(group["revenue"]) &
+                (group["spend"] > 0) & (group["revenue"] > 0), ["spend", "revenue"]
+            ]
             if len(usable) < MIN_OBSERVATIONS:
-                raise ValueError(
-                    f"Not enough history for {platform}: {len(usable)} usable days")
+                raise ValueError(f"{platform}: requires at least {MIN_OBSERVATIONS} positive spend/revenue observations.")
             x = np.log(usable["spend"].to_numpy(dtype=float))
             y = np.log(usable["revenue"].to_numpy(dtype=float))
             slope, intercept = np.polyfit(x, y, 1)
-            predicted = intercept + slope * x
-            ss_res = float(np.sum((y - predicted) ** 2))
+            slope = float(slope)
+            fitted = intercept + slope * x
+            ss_res = float(np.sum((y - fitted) ** 2))
             ss_tot = float(np.sum((y - y.mean()) ** 2))
-            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
-
+            raw_r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
             b = float(np.clip(slope, MIN_ELASTICITY, MAX_ELASTICITY))
-            avg_spend = float(usable["spend"].mean())
-            avg_revenue = float(usable["revenue"].mean())
+            avg_spend, avg_revenue = float(usable["spend"].mean()), float(usable["revenue"].mean())
             a = avg_revenue / avg_spend ** b
-            self.curves[str(platform)] = ResponseCurve(
-                str(platform), a, b, r2, len(usable), avg_spend, avg_revenue)
+            self.curves[str(platform)] = ResponseCurve(str(platform), a, b, raw_r2, len(usable), avg_spend, avg_revenue)
+        self._check_feasible()
         return self
 
     def _check_feasible(self) -> None:
         n = len(self.curves)
-        if not self.curves:
-            raise RuntimeError("Call fit() before recommend()")
-        if n * self.min_share > 1 + 1e-9 or n * self.max_share < 1 - 1e-9:
-            raise ValueError("Share limits are infeasible for the number of platforms")
+        if not n:
+            raise RuntimeError("Fit the optimizer before requesting a recommendation.")
+        if n * self.min_share > 1 + 1e-12 or n * self.max_share < 1 - 1e-12:
+            raise ValueError(f"Share limits infeasible for {n} platforms: need n*min_share <= 1 <= n*max_share.")
 
     def _allocate(self, budget: float) -> dict[str, float]:
-        floor = self.min_share * budget
-        cap = self.max_share * budget
-        spend = {name: floor for name in self.curves}
-        step = (budget - floor * len(spend)) / self.steps
+        names = list(self.curves)
+        lower, upper = self.min_share * budget, self.max_share * budget
+        allocation = {name: lower for name in names}
+        remaining = budget - lower * len(names)
+        # Discrete marginal-gain allocation. Use equal budget increments and place any residual exactly.
+        step = remaining / self.steps if remaining > 0 else 0
         for _ in range(self.steps):
-            best_name, best_gain = None, -np.inf
-            for name, curve in self.curves.items():
-                if spend[name] + step > cap + 1e-9 * budget:
-                    continue
-                gain = curve.revenue(spend[name] + step) - curve.revenue(spend[name])
-                if gain > best_gain:
-                    best_name, best_gain = name, gain
-            if best_name is None:
+            if remaining <= 1e-10 * max(1.0, budget):
                 break
-            spend[best_name] += step
-        return spend
+            candidates = [n for n in names if allocation[n] + min(step, remaining) <= upper + 1e-9 * max(1.0, budget)]
+            if not candidates:
+                candidates = [n for n in names if allocation[n] < upper - 1e-9 * max(1.0, budget)]
+            if not candidates:
+                break
+            amount = min(step, remaining)
+            best = max(candidates, key=lambda n: self.curves[n].revenue(allocation[n] + amount) - self.curves[n].revenue(allocation[n]))
+            allocation[best] += amount
+            remaining -= amount
+        if remaining > 1e-7 * max(1.0, budget):
+            for name in sorted(names, key=lambda n: self.curves[n].marginal_revenue(allocation[n]), reverse=True):
+                amount = min(remaining, upper - allocation[name])
+                if amount > 0:
+                    allocation[name] += amount
+                    remaining -= amount
+                if remaining <= 1e-7 * max(1.0, budget):
+                    break
+        if remaining > 1e-6 * max(1.0, budget):
+            raise RuntimeError("Could not allocate the full budget within share constraints.")
+        return allocation
 
     def recommend(self, total_daily_budget: float | None = None) -> AllocationResult:
-        """Return the revenue-maximising allocation of a total daily budget."""
         self._check_feasible()
         historical = {n: c.avg_daily_spend for n, c in self.curves.items()}
         historical_total = sum(historical.values())
-        budget = float(total_daily_budget) if total_daily_budget else historical_total
-
+        if total_daily_budget is None:
+            budget = historical_total
+        else:
+            budget = float(total_daily_budget)
+        if not math.isfinite(budget) or budget <= 0:
+            raise ValueError("total_daily_budget must be finite and greater than zero.")
         current = {n: budget * s / historical_total for n, s in historical.items()}
         recommended = self._allocate(budget)
-
         rows = []
         for name, curve in self.curves.items():
-            cur_rev = curve.revenue(current[name])
-            rec_rev = curve.revenue(recommended[name])
-            rows.append({
-                "platform": name,
-                "current_share_pct": current[name] / budget * 100,
-                "recommended_share_pct": recommended[name] / budget * 100,
-                "change_pp": (recommended[name] - current[name]) / budget * 100,
-                "current_daily_spend": current[name],
-                "recommended_daily_spend": recommended[name],
-                "current_roas": cur_rev / current[name],
-                "projected_roas": rec_rev / recommended[name],
-                "marginal_roas": curve.marginal_revenue(recommended[name]),
-                "elasticity": curve.b,
-                "fit_r2": curve.r2,
-            })
-        table = pd.DataFrame(rows).sort_values(
-            "recommended_share_pct", ascending=False).reset_index(drop=True)
-
+            cur, rec = current[name], recommended[name]
+            rows.append({"platform": name, "current_share_pct": cur / budget * 100,
+                "recommended_share_pct": rec / budget * 100, "change_pp": (rec-cur)/budget*100,
+                "current_daily_spend": cur, "recommended_daily_spend": rec,
+                "current_roas": curve.revenue(cur)/cur, "projected_roas": curve.revenue(rec)/rec,
+                "marginal_roas": curve.marginal_revenue(rec), "elasticity": curve.b,
+                "fit_r2": curve.r2, "n_observations": curve.n_obs})
+        table = pd.DataFrame(rows).sort_values("recommended_share_pct", ascending=False).reset_index(drop=True)
         current_revenue = sum(self.curves[n].revenue(current[n]) for n in self.curves)
         recommended_revenue = sum(self.curves[n].revenue(recommended[n]) for n in self.curves)
         return AllocationResult(table, budget, current_revenue, recommended_revenue)
 
-
 def format_recommendation(result: AllocationResult) -> str:
-    t = result.table
-    view = pd.DataFrame({
-        "Platform": t["platform"],
-        "Current %": t["current_share_pct"].map("{:.1f}".format),
-        "Recommended %": t["recommended_share_pct"].map("{:.1f}".format),
-        "Change (pp)": t["change_pp"].map("{:+.1f}".format),
-        "Rec. daily $": t["recommended_daily_spend"].map("{:,.0f}".format),
-        "ROAS now": t["current_roas"].map("{:.2f}x".format),
-        "ROAS proj.": t["projected_roas"].map("{:.2f}x".format),
-        "Marginal ROAS": t["marginal_roas"].map("{:.2f}x".format),
-        "Elasticity": t["elasticity"].map("{:.2f}".format),
-        "Fit R2": t["fit_r2"].map("{:.2f}".format),
-    })
-    summary = (
-        f"\nTotal daily budget: ${result.total_daily_budget:,.0f}"
-        f"\nProjected daily revenue: ${result.current_revenue:,.0f} -> "
-        f"${result.recommended_revenue:,.0f} ({result.uplift_pct:+.1f}%)"
-        f"\nBlended ROAS: {result.current_roas:.2f}x -> {result.recommended_roas:.2f}x"
-    )
-    return view.to_string(index=False) + summary
+    return (result.table.to_string(index=False, float_format=lambda x: f"{x:,.3f}") +
+        f"\n\nProjected current revenue/day: {result.current_revenue:,.2f}" +
+        f"\nProjected recommended revenue/day: {result.recommended_revenue:,.2f}" +
+        f"\nProjected uplift: {result.uplift_pct:,.2f}%" +
+        f"\nCurrent modeled ROAS: {result.current_roas:,.3f}" +
+        f"\nRecommended modeled ROAS: {result.recommended_roas:,.3f}")
