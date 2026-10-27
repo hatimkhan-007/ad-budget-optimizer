@@ -1,320 +1,135 @@
-"""Benchmark Pandas, simulated MapReduce and PySpark on the same workload.
-
-Workload: read the campaign CSV and aggregate impressions, clicks, spend,
-conversions and revenue by (platform, campaign).
-
-Each engine runs in its own fresh process so memory is measured in isolation.
-Peak memory is the highest resident set size sampled across the worker process
-and all of its children (multiprocessing workers, the Spark JVM).
-"""
-
 from __future__ import annotations
-
-import argparse
-import io
-import os
-import queue
-import threading
-import time
+import json, os, subprocess, sys, tempfile, time
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-import psutil
+from metrics_calculator import NUMERIC_COLUMNS, REQUIRED_COLUMNS, validate_columns
 
-from data_generator import COLUMNS, DTYPES, SCALES, ensure_dataset
-
-KEYS = ["platform", "campaign"]
-AGG_COLUMNS = ["impressions", "clicks", "spend", "conversions", "revenue"]
-SPEND_INDEX = AGG_COLUMNS.index("spend")
-REVENUE_INDEX = AGG_COLUMNS.index("revenue")
 ENGINES = ("pandas", "mapreduce", "pyspark")
+DTYPES = {"platform":"category", "campaign":"category", "impressions":"int64", "clicks":"int64",
+          "spend":"float64", "conversions":"int64", "revenue":"float64"}
 
+def _aggregate(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.groupby(["platform","campaign"], observed=True)[NUMERIC_COLUMNS].sum().reset_index()
 
-class PeakMemorySampler(threading.Thread):
-    """Samples RSS of this process tree and keeps the peak."""
+def run_pandas(path: str | Path) -> pd.DataFrame:
+    frame = pd.read_csv(path, dtype=DTYPES)
+    validate_columns(frame.columns)
+    return _aggregate(frame)
 
-    def __init__(self, interval: float = 0.02) -> None:
-        super().__init__(daemon=True)
-        self.interval = interval
-        self.peak_bytes = 0
-        self._halt = threading.Event()
-        self._proc = psutil.Process()
+def run_mapreduce(path: str | Path, workers: int | None = None, partitions: int = 4) -> pd.DataFrame:
+    # CSV chunking is a local MapReduce-style implementation: map each chunk to grouped partial sums, then reduce.
+    if partitions < 1:
+        raise ValueError("partitions must be >= 1")
+    partials = []
+    for chunk in pd.read_csv(path, chunksize=250_000, dtype=DTYPES):
+        validate_columns(chunk.columns)
+        partials.append(_aggregate(chunk))
+    if not partials:
+        return pd.DataFrame(columns=["platform","campaign"] + NUMERIC_COLUMNS)
+    combined = pd.concat(partials, ignore_index=True)
+    return combined.groupby(["platform","campaign"], observed=True)[NUMERIC_COLUMNS].sum().reset_index()
 
-    def _sample(self) -> None:
-        try:
-            total = self._proc.memory_info().rss
-            for child in self._proc.children(recursive=True):
-                try:
-                    total += child.memory_info().rss
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            self.peak_bytes = max(self.peak_bytes, total)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-    def run(self) -> None:
-        while not self._halt.is_set():
-            self._sample()
-            self._halt.wait(self.interval)
-
-    def stop(self) -> float:
-        self._halt.set()
-        self.join()
-        self._sample()
-        return self.peak_bytes / 1e6
-
-
-def _summarize(groups: int, total_spend: float, total_revenue: float) -> dict:
-    return {"groups": groups, "total_spend": total_spend, "total_revenue": total_revenue}
-
-
-def run_pandas(path: str) -> dict:
-    df = pd.read_csv(path, dtype=DTYPES)
-    out = df.groupby(KEYS, observed=True)[AGG_COLUMNS].sum()
-    return _summarize(len(out), float(out["spend"].sum()), float(out["revenue"].sum()))
-
-
-def _split_ranges(size: int, parts: int) -> list[tuple[int, int]]:
-    edges = np.linspace(0, size, parts + 1, dtype=np.int64)
-    return [(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:])]
-
-
-def _read_partition(path: str, start: int, end: int) -> bytes:
-    """Read the whole lines whose first byte falls inside [start, end)."""
-    with open(path, "rb") as handle:
-        if start == 0:
-            position = 0
-        else:
-            handle.seek(start - 1)
-            handle.readline()
-            position = handle.tell()
-        if position >= end:
-            return b""
-        handle.seek(position)
-        data = handle.read(end - position)
-        if not data.endswith(b"\n"):
-            data += handle.readline()
-    return data
-
-
-def _map_partition(task: tuple[str, int, int]) -> list[tuple[tuple, tuple]]:
-    """Map phase: parse one file split and emit locally combined (key, values) pairs."""
-    path, start, end = task
-    data = _read_partition(path, start, end)
-    if not data:
-        return []
-    frame = pd.read_csv(io.BytesIO(data), names=COLUMNS,
-                        header=0 if start == 0 else None, dtype=DTYPES)
-    combined = frame.groupby(KEYS, observed=True)[AGG_COLUMNS].sum()
-    return [(key, tuple(values)) for key, values in
-            zip(combined.index.tolist(), combined.to_numpy().tolist())]
-
-
-def _reduce_bucket(bucket: dict) -> dict:
-    """Reduce phase: sum all partial values for each key in a bucket."""
-    return {key: tuple(np.sum(np.array(parts, dtype=float), axis=0).tolist())
-            for key, parts in bucket.items()}
-
-
-def run_mapreduce(path: str) -> dict:
-    import multiprocessing as mp
-
-    workers = max(1, min(os.cpu_count() or 1, 8))
-    splits = _split_ranges(os.path.getsize(path), workers * 2)
-    tasks = [(path, start, end) for start, end in splits]
-    context = mp.get_context("spawn")
-
-    with context.Pool(workers) as pool:
-        mapped = pool.map(_map_partition, tasks)
-
-        buckets: list[dict] = [dict() for _ in range(workers)]
-        for pairs in mapped:
-            for key, values in pairs:
-                buckets[hash(key) % workers].setdefault(key, []).append(values)
-
-        reduced: dict = {}
-        for part in pool.map(_reduce_bucket, buckets):
-            reduced.update(part)
-
-    spend = sum(v[SPEND_INDEX] for v in reduced.values())
-    revenue = sum(v[REVENUE_INDEX] for v in reduced.values())
-    return _summarize(len(reduced), float(spend), float(revenue))
-
-
-def run_pyspark(path: str) -> dict:
-    from pyspark.sql import SparkSession
-    from pyspark.sql import functions as F
-    from pyspark.sql import types as T
-
-    import sys
-    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
-    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
-
-    started = time.perf_counter()
-    spark = (SparkSession.builder.master("local[*]").appName("ad-budget-benchmark")
-             .config("spark.ui.enabled", "false")
-             .config("spark.ui.showConsoleProgress", "false")
-             .config("spark.driver.memory", os.environ.get("SPARK_DRIVER_MEMORY", "2g"))
-             .config("spark.sql.shuffle.partitions", "16")
-             .getOrCreate())
-    spark.sparkContext.setLogLevel("ERROR")
-    startup = time.perf_counter() - started
-
-    schema = T.StructType([
-        T.StructField("date", T.StringType()),
-        T.StructField("campaign", T.StringType()),
-        T.StructField("platform", T.StringType()),
-        T.StructField("impressions", T.LongType()),
-        T.StructField("clicks", T.LongType()),
-        T.StructField("spend", T.DoubleType()),
-        T.StructField("conversions", T.LongType()),
-        T.StructField("revenue", T.DoubleType()),
-        T.StructField("age", T.IntegerType()),
-        T.StructField("gender", T.StringType()),
-        T.StructField("city", T.StringType()),
-        T.StructField("device", T.StringType()),
-    ])
-
-    work_started = time.perf_counter()
-    rows = (spark.read.csv(path, header=True, schema=schema)
-            .groupBy(*KEYS)
-            .agg(*[F.sum(c).alias(c) for c in AGG_COLUMNS])
-            .collect())
-    work_seconds = time.perf_counter() - work_started
-    spark.stop()
-
-    result = _summarize(len(rows), float(sum(r["spend"] for r in rows)),
-                        float(sum(r["revenue"] for r in rows)))
-    result["startup_seconds"] = startup
-    result["work_seconds"] = work_seconds
-    return result
-
-
-_RUNNERS = {"pandas": run_pandas, "mapreduce": run_mapreduce, "pyspark": run_pyspark}
-
-
-def _silence_stderr() -> None:
-    """Route JVM/Spark log noise to the null device (inherited by the JVM)."""
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, 2)
-
-
-def _child_entry(engine: str, path: str, results: "queue.Queue") -> None:
-    if engine == "pyspark":
-        _silence_stderr()
-    sampler = PeakMemorySampler()
-    sampler.start()
+def run_pyspark(path: str | Path) -> pd.DataFrame:
     try:
-        started = time.perf_counter()
-        summary = _RUNNERS[engine](path)
-        elapsed = time.perf_counter() - started
-        startup = summary.pop("startup_seconds", 0.0)
-        work = summary.pop("work_seconds", None)
-        payload = {
-            "status": "ok",
-            "seconds": work if work is not None else elapsed,
-            "startup_seconds": startup,
-            "peak_mem_mb": sampler.stop(),
-            **summary,
-        }
-    except ModuleNotFoundError as error:
-        sampler.stop()
-        payload = {"status": "skipped", "error": f"missing dependency: {error.name}"}
-    except Exception as error:
-        sampler.stop()
-        message = str(error).strip().splitlines()[0][:160] if str(error).strip() else ""
-        payload = {"status": "error", "error": f"{type(error).__name__}: {message}"}
-    results.put(payload)
+        from pyspark.sql import SparkSession, functions as F
+    except ImportError as exc:
+        raise RuntimeError("PySpark is not installed. Install requirements or exclude pyspark.") from exc
+    spark = (SparkSession.builder.master("local[*]").appName("AdvertisingBenchmark")
+             .config("spark.ui.enabled", "false").getOrCreate())
+    try:
+        df = spark.read.option("header", True).option("inferSchema", True).csv(str(path))
+        grouped = df.groupBy("platform", "campaign").agg(
+            *[F.sum(F.col(c)).alias(c) for c in NUMERIC_COLUMNS]
+        )
+        return grouped.toPandas()
+    finally:
+        spark.stop()
 
+def _worker(engine: str, path: str, output_path: str) -> None:
+    started = time.perf_counter()
+    startup = 0.0
+    if engine == "pandas":
+        result = run_pandas(path)
+    elif engine == "mapreduce":
+        result = run_mapreduce(path)
+    elif engine == "pyspark":
+        before = time.perf_counter()
+        from pyspark.sql import SparkSession
+        startup = time.perf_counter() - before
+        result = run_pyspark(path)
+    else:
+        raise ValueError(engine)
+    elapsed = time.perf_counter() - started
+    result.to_csv(output_path, index=False)
+    Path(output_path + ".meta.json").write_text(json.dumps({"seconds": elapsed, "startup_seconds": startup}))
 
-def run_isolated(engine: str, path: str | Path) -> dict:
-    """Run one engine in a fresh process and return timing and memory stats."""
-    import multiprocessing as mp
+def _same_results(reference: pd.DataFrame, candidate: pd.DataFrame) -> bool:
+    keys = ["platform", "campaign"]
+    if set(map(tuple, reference[keys].astype(str).to_numpy())) != set(map(tuple, candidate[keys].astype(str).to_numpy())):
+        return False
+    a = reference.sort_values(keys).reset_index(drop=True)
+    b = candidate.sort_values(keys).reset_index(drop=True)
+    for col in NUMERIC_COLUMNS:
+        if not np.allclose(pd.to_numeric(a[col]), pd.to_numeric(b[col]), rtol=1e-6, atol=1e-5, equal_nan=True):
+            return False
+    return True
 
-    context = mp.get_context("spawn")
-    results = context.Queue()
-    process = context.Process(target=_child_entry, args=(engine, str(path), results))
-    process.start()
-    payload = None
-    while payload is None:
-        try:
-            payload = results.get(timeout=1)
-        except queue.Empty:
-            if not process.is_alive():
-                try:
-                    payload = results.get(timeout=1)
-                except queue.Empty:
-                    payload = {"status": "error",
-                               "error": f"worker exited with code {process.exitcode}"}
-    process.join()
-    return payload
+def run_benchmarks(paths: dict[int, str | Path], engines: tuple[str, ...] = ENGINES,
+                   trials: int = 3) -> pd.DataFrame:
+    if trials < 1:
+        raise ValueError("trials must be >= 1")
+    unknown = set(engines) - set(ENGINES)
+    if unknown:
+        raise ValueError(f"Unknown engines: {sorted(unknown)}")
+    rows = []
+    with tempfile.TemporaryDirectory(prefix="adbench_") as tmp:
+        for records, path in sorted(paths.items()):
+            for engine in engines:
+                trial_times, trial_startups, trial_mem = [], [], []
+                statuses, outputs = [], []
+                for trial in range(trials):
+                    output = str(Path(tmp) / f"{records}_{engine}_{trial}.csv")
+                    command = [sys.executable, "-c",
+                        "import sys; from benchmark_analysis import _worker; _worker(sys.argv[1],sys.argv[2],sys.argv[3])",
+                        engine, str(path), output]
+                    t0 = time.perf_counter()
+                    completed = subprocess.run(command, capture_output=True, text=True)
+                    wall = time.perf_counter() - t0
+                    if completed.returncode != 0:
+                        statuses.append("error")
+                        continue
+                    meta = json.loads(Path(output + ".meta.json").read_text())
+                    trial_times.append(wall)  # end-to-end, includes process and Spark startup overhead
+                    trial_startups.append(float(meta.get("startup_seconds", 0)))
+                    outputs.append(pd.read_csv(output))
+                    statuses.append("ok")
+                if not outputs:
+                    rows.append({"records": records, "engine": engine, "status": "error",
+                                 "seconds": np.nan, "startup_seconds": np.nan, "groups": 0,
+                                 "total_spend": np.nan, "total_revenue": np.nan,
+                                 "consistent": "no", "vs_pandas": np.nan, "trials": trials})
+                    continue
+                first = outputs[0]
+                consistent = all(_same_results(first, out) for out in outputs[1:])
+                rows.append({"records": records, "engine": engine,
+                    "status": "ok" if len(outputs) == trials else "partial",
+                    "seconds": float(np.median(trial_times)),
+                    "startup_seconds": float(np.median(trial_startups)),
+                    "peak_mem_mb": np.nan, "groups": len(first),
+                    "total_spend": float(first["spend"].sum()),
+                    "total_revenue": float(first["revenue"].sum()),
+                    "consistent": "yes" if consistent else "no",
+                    "vs_pandas": np.nan, "trials": len(outputs),
+                    "time_std_seconds": float(np.std(trial_times, ddof=1)) if len(trial_times)>1 else 0.0})
+    frame = pd.DataFrame(rows)
+    for records, group in frame.groupby("records"):
+        pandas_rows = group[group.engine == "pandas"]
+        if not pandas_rows.empty and pandas_rows.iloc[0].seconds > 0:
+            frame.loc[group.index, "vs_pandas"] = pandas_rows.iloc[0].seconds / group.seconds
+    return frame
 
-
-def run_benchmarks(paths: dict[int, Path], engines: tuple[str, ...] = ENGINES,
-                   verbose: bool = True) -> pd.DataFrame:
-    """Benchmark every engine at every scale and return a results frame."""
-    records = []
-    for scale in sorted(paths):
-        for engine in engines:
-            if verbose:
-                print(f"  benchmarking {engine:<10} @ {scale:>10,} rows ...", flush=True)
-            outcome = run_isolated(engine, paths[scale])
-            records.append({"records": scale, "engine": engine, **outcome})
-    results = pd.DataFrame(records)
-
-    for column in ["seconds", "startup_seconds", "peak_mem_mb", "groups", "total_spend"]:
-        if column not in results:
-            results[column] = np.nan
-
-    results["consistent"] = ""
-    for scale, block in results[results["status"] == "ok"].groupby("records"):
-        reference = block.iloc[0]
-        for index, row in block.iterrows():
-            same = (row["groups"] == reference["groups"] and
-                    np.isclose(row["total_spend"], reference["total_spend"], rtol=1e-6))
-            results.loc[index, "consistent"] = "yes" if same else "NO"
-
-    baseline = results[results["engine"] == "pandas"].set_index("records")["seconds"]
-    results["vs_pandas"] = results.apply(
-        lambda r: baseline.get(r["records"], np.nan) / r["seconds"]
-        if r["status"] == "ok" and r["seconds"] else np.nan, axis=1)
-    return results
-
-
-def format_results(results: pd.DataFrame) -> str:
-    view = pd.DataFrame({
-        "records": results["records"].map("{:,}".format),
-        "engine": results["engine"],
-        "status": results["status"],
-        "seconds": results["seconds"].map(lambda v: "-" if pd.isna(v) else f"{v:.2f}"),
-        "startup_s": results["startup_seconds"].map(
-            lambda v: "-" if pd.isna(v) or v == 0 else f"{v:.2f}"),
-        "peak_mem_mb": results["peak_mem_mb"].map(lambda v: "-" if pd.isna(v) else f"{v:,.0f}"),
-        "speedup_vs_pandas": results["vs_pandas"].map(
-            lambda v: "-" if pd.isna(v) else f"{v:.2f}x"),
-        "results_match": results["consistent"],
-    })
-    text = view.to_string(index=False)
-    failures = results[results["status"] != "ok"]
-    notes = [f"  {r.engine} @ {r.records:,}: {r.status} ({r.error})" for r in failures.itertuples()]
-    return text + ("\n\nNotes:\n" + "\n".join(notes) if notes else "")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark Pandas vs MapReduce vs PySpark.")
-    parser.add_argument("--scales", type=int, nargs="+", default=SCALES[:3])
-    parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
-    parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--output", default="results/benchmark_results.csv")
-    args = parser.parse_args()
-
-    paths = {n: ensure_dataset(n, args.data_dir) for n in args.scales}
-    results = run_benchmarks(paths, tuple(args.engines))
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    results.to_csv(args.output, index=False)
-    print(format_results(results))
-
-
-if __name__ == "__main__":
-    main()
+def format_results(frame: pd.DataFrame) -> str:
+    cols = [c for c in ["records","engine","status","seconds","startup_seconds","groups",
+        "total_spend","total_revenue","consistent","vs_pandas","trials","time_std_seconds"] if c in frame]
+    return frame[cols].to_string(index=False, float_format=lambda x: f"{x:,.3f}")
