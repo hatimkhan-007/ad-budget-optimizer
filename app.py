@@ -21,7 +21,7 @@ RESULTS_DIR = Path("results")
 
 
 @st.cache_data
-def load_csv(path: Path):
+def load_csv(path: Path, modified: float = 0.0):
     if path.exists():
         try:
             return pd.read_csv(path)
@@ -72,7 +72,7 @@ with st.sidebar:
     refresh_dashboard = st.button(
         "Update dashboard",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         help="Apply the uploaded CSV files and refresh all dashboard sections.",
     )
     if refresh_dashboard:
@@ -91,12 +91,14 @@ def load_with_upload(upload, filename):
         except (pd.errors.ParserError, UnicodeDecodeError, OSError):
             st.error(f"Could not read {filename}. Check that it is a valid CSV.")
             return pd.DataFrame()
-    return load_csv(RESULTS_DIR / filename)
+    path = RESULTS_DIR / filename
+    return load_csv(path, path.stat().st_mtime if path.exists() else 0.0)
 
 
 kpis = load_with_upload(kpi_upload, "kpis_by_platform.csv")
 budget = load_with_upload(budget_upload, "budget_recommendation.csv")
 benchmark = load_with_upload(benchmark_upload, "benchmark_results.csv")
+summary = load_with_upload(None, "budget_summary.csv")
 
 tab_overview, tab_platforms, tab_budget, tab_benchmark, tab_data = st.tabs(
     ["Overview", "Platform performance", "Budget optimizer", "Benchmarks", "Data tables"]
@@ -151,7 +153,7 @@ with tab_overview:
                 title="ROAS by advertising platform",
                 labels={"platform": "Platform", "roas": "ROAS (×)"},
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             best = kpis.loc[kpis["roas"].idxmax()] if kpis["roas"].notna().any() else None
             if best is not None:
@@ -183,12 +185,12 @@ with tab_platforms:
             title=f"{selected_metric.replace('_', ' ').upper()} by platform",
             labels={selected_metric: selected_metric.replace("_", " ").title(), "platform": "Platform"},
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         display_cols = ["platform"] + [c for c in [
             "ctr_pct", "cpc", "cpa", "conversion_rate_pct", "roas", "cpm"
         ] if c in kpis.columns]
-        st.dataframe(kpis[display_cols], use_container_width=True, hide_index=True)
+        st.dataframe(kpis[display_cols], width="stretch", hide_index=True)
 
 with tab_budget:
     st.subheader("Recommended budget allocation")
@@ -204,12 +206,29 @@ with tab_budget:
             budget = budget.copy()
             for col in ["current_share_pct", "recommended_share_pct", "current_roas",
                         "projected_roas", "marginal_roas", "fit_r2",
-                        "current_daily_spend", "recommended_daily_spend"]:
+                        "current_daily_spend", "recommended_daily_spend",
+                        "recommended_campaign_amount"]:
                 if col in budget.columns:
                     budget[col] = pd.to_numeric(budget[col], errors="coerce")
 
             share_sum = budget["recommended_share_pct"].sum()
             st.caption(f"Sum of recommended shares in source file: {share_sum:.2f}%")
+
+            if not summary.empty:
+                row = summary.iloc[0]
+                m1, m2, m3 = st.columns(3)
+                if "uplift_vs_compliant_baseline_pct" in summary.columns:
+                    m1.metric("Uplift vs limit-compliant baseline", pct(row["uplift_vs_compliant_baseline_pct"]))
+                if "uplift_vs_current_pct" in summary.columns:
+                    m2.metric("Uplift vs current allocation", pct(row["uplift_vs_current_pct"]))
+                if {"current_modeled_roas", "recommended_modeled_roas"} <= set(summary.columns):
+                    m3.metric("Modeled ROAS", f"{row['current_modeled_roas']:.2f}× → {row['recommended_modeled_roas']:.2f}×")
+                if "current_within_limits" in summary.columns and not bool(row["current_within_limits"]):
+                    st.info(
+                        "The current allocation breaks the configured share limits, so uplift versus current "
+                        "also reflects the cost of complying with those limits. The limit-compliant baseline "
+                        "is the fairer comparison."
+                    )
 
             daily_budget_default = (
                 float(budget["current_daily_spend"].sum())
@@ -240,17 +259,17 @@ with tab_budget:
                 title="Current vs recommended allocation",
                 labels={"value": "Budget share (%)", "platform": "Platform", "variable": "Allocation"},
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             budget_display = budget[[
                 c for c in ["platform", "current_share_pct", "recommended_share_pct",
-                            "scenario_daily_spend", "current_roas", "projected_roas",
-                            "marginal_roas", "fit_r2", "n_observations"]
+                            "recommended_campaign_amount", "scenario_daily_spend", "current_roas",
+                            "projected_roas", "marginal_roas", "elasticity", "fit_r2", "n_observations"]
                 if c in budget.columns
             ]].copy()
             if "scenario_daily_spend" in budget_display.columns:
                 budget_display["scenario_daily_spend"] = budget_display["scenario_daily_spend"].round(2)
-            st.dataframe(budget_display, use_container_width=True, hide_index=True)
+            st.dataframe(budget_display, width="stretch", hide_index=True)
 
             csv_bytes = budget_display.to_csv(index=False).encode("utf-8")
             st.download_button(
@@ -259,6 +278,15 @@ with tab_budget:
                 file_name="budget_scenario_recommendations.csv",
                 mime="text/csv",
             )
+
+            for flag, message in [
+                ("extrapolated", "Recommended spend is outside the observed daily range for: {}. Treat as extrapolation."),
+                ("elasticity_clipped", "The fitted elasticity was clipped to its allowed range for: {}."),
+            ]:
+                if flag in budget.columns:
+                    flagged = budget[budget[flag].astype(str).str.lower() == "true"]
+                    if not flagged.empty:
+                        st.warning(message.format(", ".join(flagged["platform"].astype(str))))
 
             if "fit_r2" in budget.columns:
                 weak_fit = budget[budget["fit_r2"] < 0.8]
@@ -289,6 +317,14 @@ with tab_benchmark:
             benchmark = benchmark.copy()
             benchmark["records"] = pd.to_numeric(benchmark["records"], errors="coerce")
             benchmark["seconds"] = pd.to_numeric(benchmark["seconds"], errors="coerce")
+            for col in ["startup_seconds", "peak_mem_mb", "vs_pandas"]:
+                if col in benchmark.columns:
+                    benchmark[col] = pd.to_numeric(benchmark[col], errors="coerce")
+            if "status" in benchmark.columns:
+                problems = benchmark[benchmark["status"].isin(["skipped", "error"])]
+                for item in problems.itertuples():
+                    detail = getattr(item, "detail", "")
+                    st.warning(f"{item.engine} was {item.status} at {item.records:,.0f} records. {detail if isinstance(detail, str) else ''}")
             if "time_std_seconds" in benchmark.columns:
                 benchmark["time_std_seconds"] = pd.to_numeric(
                     benchmark["time_std_seconds"], errors="coerce"
@@ -300,7 +336,7 @@ with tab_benchmark:
                 options=engines,
                 default=engines,
             )
-            plot_df = benchmark[benchmark["engine"].isin(selected_engines)].copy()
+            plot_df = benchmark[benchmark["engine"].isin(selected_engines) & benchmark["seconds"].notna()].copy()
             plot_df["records_label"] = plot_df["records"].map(
                 lambda x: f"{x:,.0f}" if pd.notna(x) else "Unknown"
             )
@@ -315,15 +351,29 @@ with tab_benchmark:
                 title="Runtime by dataset size",
                 labels={"records_label": "Records", "seconds": "Runtime (seconds)", "engine": "Engine"},
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
+
+            if "peak_mem_mb" in plot_df.columns and plot_df["peak_mem_mb"].notna().any():
+                mem_fig = px.line(
+                    plot_df.dropna(subset=["peak_mem_mb"]),
+                    x="records_label",
+                    y="peak_mem_mb",
+                    color="engine",
+                    markers=True,
+                    title="Peak memory by dataset size",
+                    labels={"records_label": "Records", "peak_mem_mb": "Peak memory (MB)", "engine": "Engine"},
+                )
+                st.plotly_chart(mem_fig, width="stretch")
+            if "startup_seconds" in plot_df.columns and (plot_df["startup_seconds"] > 0).any():
+                st.caption("Runtime is processing time only. Engine start-up (for example the Spark session) is reported separately in `startup_seconds`.")
 
             if "consistent" in benchmark.columns:
                 st.write("Consistency status")
                 st.dataframe(
                     benchmark[[c for c in ["records", "engine", "status", "consistent",
-                                           "vs_pandas", "trials", "time_std_seconds",
-                                           "peak_mem_mb"] if c in benchmark.columns]],
-                    use_container_width=True,
+                                           "seconds", "startup_seconds", "vs_pandas", "trials",
+                                           "time_std_seconds", "peak_mem_mb"] if c in benchmark.columns]],
+                    width="stretch",
                     hide_index=True,
                 )
             if "peak_mem_mb" not in benchmark.columns or benchmark["peak_mem_mb"].isna().all():
@@ -344,7 +394,7 @@ with tab_data:
     if chosen.empty:
         st.info("No data loaded for this table.")
     else:
-        st.dataframe(chosen, use_container_width=True, hide_index=True)
+        st.dataframe(chosen, width="stretch", hide_index=True)
         st.download_button(
             f"Download {data_choice.lower().replace(' ', '_')}.csv",
             data=chosen.to_csv(index=False).encode("utf-8"),
