@@ -29,6 +29,7 @@ It answers the management question *"Where should we spend the next Rs. 1 millio
 - **Budget optimization:** Diminishing-returns response curves, solved exactly under per-platform share limits.
 - **Campaign budget split:** The recommended shares are converted into amounts for a total campaign budget (default Rs. 1,000,000).
 - **Risk flags:** Warnings for extrapolation, clipped elasticity, weak curve fits and a current allocation that already breaks the limits.
+- **Auto-generated charts:** Running `main.py` saves 5 to 6 labelled PNG charts to `charts/` (ROAS, spend vs revenue, budget shares, response curves, monthly revenue and, when benchmarked, runtime and memory).
 - **Interactive dashboard:** KPI results, budget recommendations and benchmark outputs.
 - **Automated tests and CI:** Unit, integration and dashboard tests run on every push.
 
@@ -43,11 +44,12 @@ Digital-Advertising-Budget-Optimizer/
 ├── processing_engines.py     # Pandas, MapReduce and PySpark engines
 ├── benchmark_analysis.py     # Benchmark runner (time, memory, consistency)
 ├── budget_optimizer.py       # Response curves and allocation solver
+├── charts.py                 # Chart generation (saved to charts/)
 ├── requirements.txt
 ├── pytest.ini
-├── .github/workflows/ci.yml
 ├── tests/
 ├── data/                     # Generated datasets (git-ignored)
+├── charts/                   # Generated PNG charts
 ├── results/
 │   ├── kpis_by_platform.csv
 │   ├── benchmark_results.csv
@@ -64,6 +66,7 @@ Digital-Advertising-Budget-Optimizer/
 - **Pandas / NumPy** — aggregation, numerical operations and data generation
 - **PySpark** — distributed-processing framework in local mode
 - **psutil** — process-tree memory measurement
+- **Matplotlib** — chart generation
 - **Streamlit / Plotly** — interactive dashboard and charts
 - **pytest** — automated testing
 
@@ -132,7 +135,18 @@ streamlit run app.py
 
 The dashboard reads the CSVs in `results/` (or files uploaded through its sidebar). **Update dashboard** reloads those files; it does not rerun the analytics pipeline. Rerun `main.py` to regenerate results.
 
-Generated datasets are stored in `data/`; analytical results are written to `results/`.
+Generated datasets are stored in `data/`; analytical results are written to `results/`; charts are written to `charts/` (change with `--charts-dir`).
+
+### Charts
+
+| File | What it shows |
+|---|---|
+| `01_roas_by_platform.png` | Revenue earned per unit spent, by platform |
+| `02_spend_vs_revenue.png` | Total spend next to total revenue, by platform |
+| `03_budget_share_current_vs_recommended.png` | Current vs recommended budget share, with the share limits |
+| `04_response_curves.png` | Diminishing returns per platform, with current and recommended spend |
+| `05_monthly_revenue_by_platform.png` | Monthly revenue stacked by platform |
+| `06_benchmark_time_and_memory.png` | Runtime and peak memory per engine (only when the benchmark runs) |
 
 ## Testing
 
