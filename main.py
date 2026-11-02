@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from benchmark_analysis import ENGINES, format_results, run_benchmarks
+from charts import generate_charts
 from budget_optimizer import BudgetOptimizer, add_campaign_amounts, format_recommendation
 from data_generator import DEFAULT_SEED, SCALES, ensure_dataset
 from metrics_calculator import aggregate_csv, format_kpi_table, kpis_from_csv
@@ -25,6 +26,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--results-dir", default="results")
+    parser.add_argument("--charts-dir", default="charts")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--regenerate", action="store_true")
     parser.add_argument("--skip-benchmark", action="store_true")
@@ -69,6 +71,7 @@ def main(argv: list[str] | None = None) -> None:
     print(format_kpi_table(by_platform))
     by_platform.to_csv(results_dir / "kpis_by_platform.csv", index=False)
 
+    benchmark = None
     if args.skip_benchmark:
         banner("3. BENCHMARK (skipped)")
     else:
@@ -102,7 +105,13 @@ def main(argv: list[str] | None = None) -> None:
         "recommended_modeled_roas": result.recommended_roas,
         "current_within_limits": result.current_within_limits,
     }]).to_csv(results_dir / "budget_summary.csv", index=False)
-    print(f"\nDone in {time.perf_counter() - started:.1f}s. Outputs saved to {results_dir}/")
+
+    banner("5. CHARTS")
+    charts = generate_charts(args.charts_dir, by_platform, daily, optimizer, table,
+                             args.min_share, args.max_share, benchmark)
+    for chart in charts:
+        print(f"  {chart}")
+    print(f"\nDone in {time.perf_counter() - started:.1f}s. Outputs saved to {results_dir}/ and {args.charts_dir}/")
 
 
 if __name__ == "__main__":
