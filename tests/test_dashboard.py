@@ -11,7 +11,7 @@ streamlit_testing = pytest.importorskip("streamlit.testing.v1")
 def test_dashboard_renders_generated_results(tmp_path, monkeypatch):
     project = Path(__file__).resolve().parents[1]
     pipeline.main(["--scales", "10000", "--engines", "pandas", "--trials", "1",
-                   "--data-dir", str(tmp_path / "data"), "--results-dir", str(tmp_path / "results")])
+                   "--data-dir", str(tmp_path / "data"), "--results-dir", str(tmp_path / "results"), "--charts-dir", str(tmp_path / "charts")])
     shutil.copy(project / "app.py", tmp_path / "app.py")
     monkeypatch.chdir(tmp_path)
     app = streamlit_testing.AppTest.from_file(str(tmp_path / "app.py"), default_timeout=60).run()

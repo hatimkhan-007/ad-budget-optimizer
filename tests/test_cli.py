@@ -7,7 +7,7 @@ import main as pipeline
 
 def test_pipeline_end_to_end(tmp_path):
     pipeline.main(["--scales", "20000", "--engines", "pandas", "mapreduce", "--trials", "1",
-                   "--data-dir", str(tmp_path / "data"), "--results-dir", str(tmp_path / "results"),
+                   "--data-dir", str(tmp_path / "data"), "--results-dir", str(tmp_path / "results"), "--charts-dir", str(tmp_path / "charts"),
                    "--campaign-budget", "500000", "--currency", "PKR"])
     results = tmp_path / "results"
     budget = pd.read_csv(results / "budget_recommendation.csv")
@@ -21,7 +21,7 @@ def test_pipeline_end_to_end(tmp_path):
 
 def test_skip_benchmark_writes_no_benchmark_file(tmp_path):
     pipeline.main(["--scales", "10000", "--skip-benchmark", "--data-dir", str(tmp_path / "d"),
-                   "--results-dir", str(tmp_path / "r")])
+                   "--results-dir", str(tmp_path / "r"), "--charts-dir", str(tmp_path / "c")])
     assert not (tmp_path / "r" / "benchmark_results.csv").exists()
 
 
