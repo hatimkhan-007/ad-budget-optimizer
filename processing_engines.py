@@ -40,12 +40,18 @@ def _finalise(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ Pandas
-def run_pandas(path: str | Path) -> pd.DataFrame:
+def run_pandas(path: str | Path, timings: dict | None = None) -> pd.DataFrame:
+    """Single-process read and aggregate. ``timings`` receives the load and aggregate phase durations."""
+    started = time.perf_counter()
     frame = pd.read_csv(path, usecols=GROUP_KEYS + VALUE_COLUMNS, dtype=_dtypes())
+    loaded = time.perf_counter()
     grouped = frame.groupby(GROUP_KEYS, observed=True)
     result = grouped[VALUE_COLUMNS].sum()
     result.insert(0, "rows", grouped.size())
-    return _finalise(result.reset_index())
+    final = _finalise(result.reset_index())
+    if timings is not None:
+        timings.update(load_seconds=loaded - started, aggregate_seconds=time.perf_counter() - loaded)
+    return final
 
 
 # ------------------------------------------------------------------ MapReduce (local, multiprocessing)
@@ -105,7 +111,9 @@ def reduce_task(partials: list[dict]) -> dict:
     return out
 
 
-def run_mapreduce(path: str | Path, workers: int | None = None, split_bytes: int = DEFAULT_SPLIT_BYTES) -> pd.DataFrame:
+def run_mapreduce(path: str | Path, workers: int | None = None, split_bytes: int = DEFAULT_SPLIT_BYTES,
+                  timings: dict | None = None) -> pd.DataFrame:
+    """Local MapReduce. ``timings`` receives the map phase (including worker start-up) and reduce phase durations."""
     workers = workers or os.cpu_count() or 1
     reducers = max(workers, 2)
     columns = _header(path)
@@ -113,9 +121,13 @@ def run_mapreduce(path: str | Path, workers: int | None = None, split_bytes: int
     if not splits:
         return pd.DataFrame(columns=RESULT_COLUMNS)
     tasks = [(str(path), start, end, columns, reducers) for start, end in splits]
+    started = time.perf_counter()
     with multiprocessing.get_context("spawn").Pool(workers) as pool:
         mapped = pool.map(map_task, tasks)
+        mapped_at = time.perf_counter()
         reduced = pool.map(reduce_task, [[m[r] for m in mapped] for r in range(reducers)])
+    if timings is not None:
+        timings.update(map_seconds=mapped_at - started, reduce_seconds=time.perf_counter() - mapped_at)
     merged: dict[tuple, list[float]] = {}
     for part in reduced:
         merged.update(part)
@@ -174,11 +186,12 @@ def run_pyspark(path: str | Path) -> tuple[pd.DataFrame, float]:
 # ------------------------------------------------------------------ Worker entry point
 def worker(engine: str, path: str, output: str) -> None:
     startup = 0.0
+    phases: dict[str, float] = {}
     started = time.perf_counter()
     if engine == "pandas":
-        result = run_pandas(path)
+        result = run_pandas(path, timings=phases)
     elif engine == "mapreduce":
-        result = run_mapreduce(path)
+        result = run_mapreduce(path, timings=phases)
     elif engine == "pyspark":
         result, startup = run_pyspark(path)
     else:
@@ -188,6 +201,7 @@ def worker(engine: str, path: str, output: str) -> None:
     Path(output + ".meta.json").write_text(json.dumps({
         "processing_seconds": elapsed - startup,
         "startup_seconds": startup,
+        "phases": phases,
     }))
 
 

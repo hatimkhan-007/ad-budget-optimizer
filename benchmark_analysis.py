@@ -20,7 +20,8 @@ PROJECT_DIR = Path(__file__).resolve().parent
 SAMPLE_INTERVAL_SECONDS = 0.02
 RESULT_COLUMNS = ["records", "engine", "status", "seconds", "startup_seconds", "wall_seconds", "peak_mem_mb",
                   "groups", "rows_counted", "total_spend", "total_revenue", "consistent", "vs_pandas",
-                  "trials", "time_std_seconds", "detail"]
+                  "trials", "time_std_seconds", "first_trial_seconds", "warm_seconds", "throughput_rps", "phases",
+                  "detail"]
 
 
 def engine_available(engine: str) -> tuple[bool, str]:
@@ -74,7 +75,8 @@ def run_engine(engine: str, path: str | Path, workdir: Path, trial: int) -> dict
         return {"ok": False, "detail": lines[-1] if lines else f"Exited with code {process.returncode}"}
     meta = json.loads(Path(str(output) + ".meta.json").read_text())
     return {"ok": True, "result": pd.read_csv(output), "wall": wall, "peak": peak if psutil and peak > 0 else np.nan,
-            "seconds": float(meta["processing_seconds"]), "startup": float(meta["startup_seconds"])}
+            "seconds": float(meta["processing_seconds"]), "startup": float(meta["startup_seconds"]),
+            "phases": meta.get("phases", {})}
 
 
 def results_match(reference: pd.DataFrame, candidate: pd.DataFrame) -> bool:
@@ -126,6 +128,10 @@ def run_benchmarks(paths: dict[int, str | Path], engines: tuple[str, ...] = ENGI
                 consistent = (all(results_match(first, r["result"]) for r in good[1:])
                               and results_match(reference, first) and int(first["rows"].sum()) == records)
                 seconds = [r["seconds"] for r in good]
+                warm = seconds[1:]
+                phase_names = sorted({k for r in good for k in r.get("phases", {})})
+                phases = {k: round(float(np.median([r["phases"][k] for r in good if k in r.get("phases", {})])), 4)
+                          for k in phase_names}
                 rows.append({
                     "records": records, "engine": engine,
                     "status": "ok" if len(good) == trials else "partial",
@@ -137,6 +143,10 @@ def run_benchmarks(paths: dict[int, str | Path], engines: tuple[str, ...] = ENGI
                     "total_spend": float(first["spend"].sum()), "total_revenue": float(first["revenue"].sum()),
                     "consistent": "yes" if consistent else "no", "vs_pandas": np.nan, "trials": len(good),
                     "time_std_seconds": float(np.std(seconds, ddof=1)) if len(seconds) > 1 else 0.0,
+                    "first_trial_seconds": float(seconds[0]),
+                    "warm_seconds": float(np.median(warm)) if warm else np.nan,
+                    "throughput_rps": records / float(np.median(seconds)) if np.median(seconds) > 0 else np.nan,
+                    "phases": json.dumps(phases),
                     "detail": "" if len(good) == trials else f"{trials - len(good)} trial(s) failed",
                 })
     frame = pd.DataFrame(rows, columns=RESULT_COLUMNS)
@@ -149,8 +159,8 @@ def run_benchmarks(paths: dict[int, str | Path], engines: tuple[str, ...] = ENGI
 
 
 def format_results(frame: pd.DataFrame) -> str:
-    columns = ["records", "engine", "status", "seconds", "startup_seconds", "peak_mem_mb", "groups",
-               "consistent", "vs_pandas", "trials", "time_std_seconds"]
+    columns = ["records", "engine", "status", "seconds", "first_trial_seconds", "warm_seconds", "startup_seconds",
+               "peak_mem_mb", "throughput_rps", "groups", "consistent", "vs_pandas", "trials", "time_std_seconds"]
     display = frame[[c for c in columns if c in frame]].copy()
     text = display.to_string(index=False, na_rep="—", float_format=lambda x: f"{x:,.3f}")
     notes = [f"  {r.records:,} / {r.engine}: {r.detail}" for r in frame.itertuples() if isinstance(r.detail, str) and r.detail]
