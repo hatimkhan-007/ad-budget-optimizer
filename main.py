@@ -6,9 +6,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics import load_or_build_aggregates
 from benchmark_analysis import ENGINES, format_results, run_benchmarks
-from charts import generate_charts
 from budget_optimizer import BudgetOptimizer, add_campaign_amounts, format_recommendation
+from campaign_optimizer import CampaignOptimizer
+from campaigns import build_campaign_catalog
+from charts import generate_charts
 from data_generator import DEFAULT_SEED, SCALES, ensure_dataset
 from metrics_calculator import aggregate_csv, format_kpi_table, kpis_from_csv
 
@@ -22,11 +25,12 @@ def banner(title: str) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Digital Advertising Budget Optimizer")
     parser.add_argument("--scales", type=int, nargs="+", default=SCALES[:3], help="Dataset sizes to generate and benchmark.")
-    parser.add_argument("--full", action="store_true", help="Include the 10M-record dataset.")
+    parser.add_argument("--full", action="store_true", help="Also include the 5M and 10M record datasets.")
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--charts-dir", default="charts")
+    parser.add_argument("--cache-dir", default="cache", help="Where aggregated summaries are cached.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--regenerate", action="store_true")
     parser.add_argument("--skip-benchmark", action="store_true")
@@ -53,7 +57,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     started = time.perf_counter()
-    scales = sorted(set(args.scales + ([10_000_000] if args.full else [])))
+    scales = sorted(set(args.scales + ([5_000_000, 10_000_000] if args.full else [])))
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -106,7 +110,27 @@ def main(argv: list[str] | None = None) -> None:
         "current_within_limits": result.current_within_limits,
     }]).to_csv(results_dir / "budget_summary.csv", index=False)
 
-    banner("5. CHARTS")
+    banner("5. CAMPAIGN-LEVEL OPTIMIZATION")
+    aggregates = load_or_build_aggregates(paths[largest], args.cache_dir)
+    campaign_daily = aggregates.frames["campaign_daily"]
+    catalog = build_campaign_catalog(campaign_daily, args.seed)
+    campaign_optimizer = CampaignOptimizer().fit(campaign_daily)
+    campaign_result = campaign_optimizer.recommend_campaigns(args.budget, catalog)
+    campaign_table = campaign_result.table
+    print(f"{len(campaign_table)} campaigns optimised (max change per campaign "
+          f"{campaign_optimizer.max_change:.0%}, platform share limits "
+          f"{campaign_optimizer.platform_limits[0]:.0%}-{campaign_optimizer.platform_limits[1]:.0%}).")
+    print(f"Model-estimated revenue/day: {campaign_result.current_revenue:,.2f} -> "
+          f"{campaign_result.recommended_revenue:,.2f} "
+          f"({campaign_result.uplift_vs_compliant_pct:+.2f}% vs limit-compliant baseline).")
+    for note in campaign_result.notes:
+        print(f"Note: {note}")
+    shown = ["campaign_id", "action", "current_share_pct", "recommended_share_pct", "historical_roas", "marginal_roas"]
+    print(campaign_table.nlargest(5, "change_pp")[shown].to_string(index=False, float_format=lambda x: f"{x:,.2f}"))
+    campaign_table.to_csv(results_dir / "campaign_recommendation.csv", index=False)
+    catalog.to_csv(results_dir / "campaign_catalog.csv", index=False)
+
+    banner("6. CHARTS")
     charts = generate_charts(args.charts_dir, by_platform, daily, optimizer, table,
                              args.min_share, args.max_share, benchmark)
     for chart in charts:
