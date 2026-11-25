@@ -56,6 +56,11 @@ def _add_ratios(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def add_ratios(frame: pd.DataFrame) -> pd.DataFrame:
+    """Append CTR, CPC, CPA, conversion rate, ROAS and CPM columns to a frame of summed metrics."""
+    return _add_ratios(frame)
+
+
 def _keys(by: str | list[str] | None) -> list[str]:
     return [by] if isinstance(by, str) else list(by or [])
 

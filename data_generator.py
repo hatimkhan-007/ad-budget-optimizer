@@ -12,7 +12,7 @@ DEFAULT_CHUNK_SIZE = 500_000
 GENERATOR_VERSION = 3
 DAYS = 365
 START_DATE = pd.Timestamp("2025-01-01")
-SCALES = [10_000, 100_000, 1_000_000, 10_000_000]
+SCALES = [10_000, 100_000, 1_000_000, 5_000_000, 10_000_000]
 
 PLATFORMS = {
     "Facebook": {"cpm": 8.6, "ctr": 0.012, "cvr": 0.031, "aov": 62, "base": 1.00, "sat": 0.14},
