@@ -23,3 +23,14 @@ def daily_frame():
             spend = 100 + 3 * i
             rows.append({"platform": platform, "date": date, "spend": spend, "revenue": multiplier * spend ** exponent})
     return pd.DataFrame(rows)
+
+
+@pytest.fixture(scope="session")
+def campaign_csv(tmp_path_factory):
+    return generate_csv(60_000, tmp_path_factory.mktemp("campaign_data") / "ads_60000.csv", seed=7)
+
+
+@pytest.fixture(scope="session")
+def aggregates(campaign_csv):
+    from analytics import build_aggregates
+    return build_aggregates(campaign_csv, chunksize=25_000)
