@@ -221,3 +221,12 @@ __marimo__/
 
 # Generated datasets (recreated by main.py or data_generator.py)
 data/
+
+# Derived analytics cache (rebuilt automatically from data/)
+cache/
+
+# Never commit credentials or archives
+.env
+!.env.example
+*.rar
+*.zip

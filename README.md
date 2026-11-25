@@ -1,332 +1,368 @@
 # Digital Advertising Budget Optimizer
 
-A big data analytics project that simulates digital marketing campaigns at scale, benchmarks three data-processing approaches, calculates marketing KPIs, and recommends how to split an advertising budget across platforms.
+A big data analytics project that simulates digital advertising campaigns at scale, benchmarks three data-processing approaches, visualises campaigns and their advertisements, and recommends how to redistribute an advertising budget across platforms and individual campaigns.
 
-It answers the management question *"Where should we spend the next Rs. 1 million?"* using datasets from **10K to 10M records**, and compares Pandas, a simulated MapReduce implementation, and PySpark.
+> **All advertising data in this project is simulated.** Campaigns, budgets, audiences, results and ad creatives are generated for demonstration. Nothing here describes real campaigns, and no advertisement was ever published.
 
 ## Table of Contents
 
-- [Features](#features)
-- [Project Structure](#project-structure)
-- [Tech Stack](#tech-stack)
-- [Setup](#setup)
-- [Running the Project](#running-the-project)
-- [Testing](#testing)
-- [Architecture](#architecture)
-- [Dashboard UI](#dashboard-ui)
-- [Budget Optimization](#budget-optimization)
-- [Benchmark Results](#benchmark-results)
-- [Platform Performance](#platform-performance)
-- [Limitations](#limitations)
+1. [Project Overview](#1-project-overview)
+2. [Problem Statement](#2-problem-statement)
+3. [Objectives](#3-objectives)
+4. [Main Features](#4-main-features)
+5. [Technology Stack](#5-technology-stack)
+6. [Architecture](#6-architecture)
+7. [Project Structure](#7-project-structure)
+8. [Installation](#8-installation)
+9. [Environment Setup](#9-environment-setup)
+10. [Execution Instructions](#10-execution-instructions)
+11. [Dataset Generation](#11-dataset-generation)
+12. [Big Data Processing Methodology](#12-big-data-processing-methodology)
+13. [Benchmarking Methodology and Results](#13-benchmarking-methodology-and-results)
+14. [Budget Optimization Methodology](#14-budget-optimization-methodology)
+15. [Advertising Visualization Features](#15-advertising-visualization-features)
+16. [Sentiment Integration Methodology](#16-sentiment-integration-methodology)
+17. [Testing](#17-testing)
+18. [Screenshots](#18-screenshots)
+19. [Limitations](#19-limitations)
+20. [Future Improvements](#20-future-improvements)
 
-## Features
+## 1. Project Overview
 
-- **Scalable synthetic data generation:** Reproducible campaign data from 10K to 10M records, written in chunks, with platform, campaign, audience, device, age, gender and city fields.
-- **Marketing KPI analytics:** CTR, CPC, CPA, conversion rate, ROAS and CPM, calculated from aggregated totals.
-- **Processing-engine benchmarks:** Pandas, a multiprocessing MapReduce simulation, and PySpark, each run in an isolated process.
-- **Runtime and memory measurement:** Processing time, engine start-up time and peak memory (including child processes).
-- **Cross-engine correctness checks:** Every engine's output is compared with the Pandas reference (groups, row counts and totals).
-- **Budget optimization:** Diminishing-returns response curves, solved exactly under per-platform share limits.
-- **Campaign budget split:** The recommended shares are converted into amounts for a total campaign budget (default Rs. 1,000,000).
-- **Risk flags:** Warnings for extrapolation, clipped elasticity, weak curve fits and a current allocation that already breaks the limits.
-- **Auto-generated charts:** Running `main.py` saves 5 to 6 labelled PNG charts to `charts/` (ROAS, spend vs revenue, budget shares, response curves, monthly revenue and, when benchmarked, runtime and memory).
-- **Interactive dashboard:** KPI results, budget recommendations and benchmark outputs.
-- **Automated tests and CI:** Unit, integration and dashboard tests run on every push.
+The project answers the management question *"Where should the next advertising budget go?"* It generates reproducible campaign data from 10 thousand to 10 million records, computes marketing KPIs, compares Pandas, a simulated MapReduce implementation and PySpark, and uses a diminishing-returns model to recommend a budget split. A Streamlit dashboard exposes everything through nine sections.
 
-## Project Structure
+## 2. Problem Statement
 
-```text
-Digital-Advertising-Budget-Optimizer/
-├── app.py                    # Streamlit dashboard
-├── main.py                   # End-to-end pipeline
-├── data_generator.py         # Synthetic campaign data
-├── metrics_calculator.py     # KPI calculation and validation
-├── processing_engines.py     # Pandas, MapReduce and PySpark engines
-├── benchmark_analysis.py     # Benchmark runner (time, memory, consistency)
-├── budget_optimizer.py       # Response curves and allocation solver
-├── charts.py                 # Chart generation (saved to charts/)
-├── requirements.txt
-├── pytest.ini
-├── tests/
-├── data/                     # Generated datasets (git-ignored)
-├── charts/                   # Generated PNG charts
-├── results/
-│   ├── kpis_by_platform.csv
-│   ├── benchmark_results.csv
-│   ├── budget_recommendation.csv
-│   └── budget_summary.csv
-└── assets/
-    ├── budget-optimizer.jpg
-    └── UI-of-ad-budget-optimizer.jpg
+Advertising teams spread budget over several platforms and many campaigns. Average ROAS alone is misleading: a platform with the best average return may already be saturated, so the next unit of spend earns less than elsewhere. Teams also need analytics that stay usable as data grows from thousands to millions of rows, and need to know which processing approach suits which size.
+
+## 3. Objectives
+
+- Generate realistic, reproducible campaign data at five scales (10K, 100K, 1M, 5M, 10M records).
+- Compute CTR, CPC, CPA, conversion rate, ROAS and CPM correctly at any aggregation level.
+- Process large files with bounded memory and measure Pandas, MapReduce and PySpark honestly.
+- Recommend budget allocations under explicit constraints, and explain every recommendation.
+- Visualise campaigns, their (simulated) creatives and their measured performance.
+- Prepare an optional, safe integration point for the YouTube comment sentiment project.
+
+## 4. Main Features
+
+- **Chunked data pipeline:** validation (missing values, negative values, funnel violations), duplicate detection, dtype optimisation, and single-pass aggregation into small summary tables.
+- **Campaign catalog:** ID, name, platform, objective, status, start/end date, target audience, budget and spend for every campaign (budget is simulated, status is derived from delivery).
+- **Simulated ad previews:** headline, description, call to action and artwork rendered in Facebook, Instagram, TikTok, YouTube and Google styles, always labelled as simulated.
+- **Benchmarking:** Pandas, MapReduce and PySpark in isolated processes with time, cold vs warm runs, start-up, phase timings, peak memory, throughput and cross-engine result checks.
+- **Budget optimisation at two levels:** platform and campaign, with exact constrained solving, performance tiers and a written reason for each recommendation.
+- **Optional sentiment analytics:** validated import, distribution and trend charts, and linking to campaigns only through explicit identifiers.
+- **Nine-section dashboard:** Executive Overview, Campaign Management, Advertising Creatives, Big Data Analytics, Framework Benchmarking, Budget Optimization, Sentiment Analytics, Dataset Management, About.
+- **Automated tests** for generation, validation, metrics, optimisation constraints, sentiment ingestion, invalid and empty inputs, engines and the dashboard.
+
+## 5. Technology Stack
+
+| Area | Tools |
+|---|---|
+| Language | Python 3.10+ |
+| Data processing | Pandas, NumPy, PySpark (local mode), multiprocessing |
+| Measurement | psutil (process-tree memory) |
+| Dashboard | Streamlit, Plotly |
+| Static charts | Matplotlib |
+| Testing | pytest, Streamlit `AppTest` |
+
+## 6. Architecture
+
+```mermaid
+flowchart TD
+    G[data_generator.py<br/>reproducible CSV datasets] --> D[(data/ads_N.csv)]
+    D --> Q[data_quality.py<br/>validation and cleaning]
+    Q --> A[analytics.py<br/>chunked aggregation + cache]
+    A --> C[campaigns.py<br/>campaign catalog]
+    A --> K[metrics_calculator.py<br/>KPIs]
+    A --> O1[budget_optimizer.py<br/>platform optimiser]
+    A --> O2[campaign_optimizer.py<br/>campaign optimiser]
+    D --> B[processing_engines.py<br/>Pandas / MapReduce / PySpark]
+    B --> BA[benchmark_analysis.py]
+    S[sentiment.py<br/>optional comment data] -. explicit ids only .-> C
+    C --> CR[creatives.py<br/>simulated ad previews]
+    K --> UI[app.py + dashboard/]
+    C --> UI
+    CR --> UI
+    O1 --> UI
+    O2 --> UI
+    BA --> UI
+    S --> UI
+    M[main.py] --> D
+    M --> BA
+    M --> O1
+    M --> O2
 ```
 
-## Tech Stack
+Raw rows are never held in memory all at once by the dashboard or the pipeline: files are read in chunks and reduced to small summary tables (campaign by day, and device, age, gender and city), which every view is built from.
 
-- **Python** — core implementation
-- **Pandas / NumPy** — aggregation, numerical operations and data generation
-- **PySpark** — distributed-processing framework in local mode
-- **psutil** — process-tree memory measurement
-- **Matplotlib** — chart generation
-- **Streamlit / Plotly** — interactive dashboard and charts
-- **pytest** — automated testing
+## 7. Project Structure
 
-## Setup
+```text
+.
+├── app.py                      # Streamlit entry point (navigation and data loading)
+├── main.py                     # End-to-end command-line pipeline
+├── data_generator.py           # Reproducible synthetic campaign data (10K to 10M)
+├── data_quality.py             # Validation, duplicate detection, dtype optimisation
+├── analytics.py                # Chunked aggregation with an on-disk cache
+├── metrics_calculator.py       # KPI calculation and validation
+├── campaigns.py                # Campaign ids and campaign catalog
+├── creatives.py                # Simulated ad creatives and platform-style previews
+├── processing_engines.py       # Pandas, MapReduce and PySpark engines
+├── benchmark_analysis.py       # Benchmark runner (time, memory, consistency)
+├── budget_optimizer.py         # Platform response curves and allocation solver
+├── campaign_optimizer.py       # Campaign-level optimiser with per-campaign limits
+├── sentiment.py                # Optional sentiment ingestion and analytics
+├── charts.py                   # Static PNG charts (written to charts/)
+├── dashboard/                  # One module per dashboard section plus theme and data helpers
+├── ad_optimizer/               # Experimental Meta Marketing API client (not used by the app)
+├── tests/                      # pytest suite
+├── assets/                     # README images
+├── .streamlit/config.toml      # Dashboard theme
+├── requirements.txt
+├── .env.example                # Variables for the optional Meta client
+├── data/                       # Generated datasets (git-ignored)
+├── cache/                      # Aggregation cache (git-ignored)
+├── charts/                     # Generated PNG charts
+└── results/                    # Generated CSV results
+```
 
-Requirements:
+## 8. Installation
 
-- Python 3.10 or newer
-- Java 17 or newer for PySpark
-- Dependencies listed in `requirements.txt`
+Requirements: Python 3.10 or newer, and Java 17 or newer if you want PySpark.
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-If Java or PySpark is unavailable, the benchmark marks PySpark as `skipped` (with the reason in the `detail` column) and continues with the other engines.
+If Java or PySpark is missing, the benchmark marks PySpark as `skipped` (with the reason) and continues with the other engines.
 
-> PySpark may print a warning that it does not yet fully support pandas 3. The results in this README were produced with pandas 3.0.2 and PySpark 4.3.0 and passed every consistency check; if you see problems, use pandas 2.x.
+## 9. Environment Setup
 
-## Running the Project
+No configuration is required. Optional environment variables:
 
-Run the standard pipeline (10K, 100K and 1M records):
+| Variable | Default | Purpose |
+|---|---|---|
+| `AD_OPT_DATA_DIR` | `data` | Where datasets are read from and written to |
+| `AD_OPT_CACHE_DIR` | `cache` | Aggregation cache location |
+| `AD_OPT_RESULTS_DIR` | `results` | Benchmark results read by the dashboard |
+| `SPARK_DRIVER_MEMORY` | engine default | Spark driver memory for large benchmarks |
 
-```bash
-python main.py
-```
+`ad_optimizer/` is an experimental, read-only Meta Marketing API client that is **not** used by the dashboard or the pipeline. It needs `requests`, `python-dotenv` and credentials in a local `.env` (see `.env.example`). Never commit `.env`; it is git-ignored.
 
-Include the 10M-record scale:
-
-```bash
-python main.py --full
-```
-
-Run KPI calculations and budget optimization without benchmarking:
+## 10. Execution Instructions
 
 ```bash
-python main.py --skip-benchmark
-```
-
-Select processing engines and trial count:
-
-```bash
+python main.py                      # 10K, 100K and 1M records, all engines
+python main.py --full               # also 5M and 10M records
+python main.py --skip-benchmark     # KPIs and optimisation only
 python main.py --engines pandas mapreduce --trials 3
-```
-
-Customize the budget and constraints:
-
-```bash
 python main.py --campaign-budget 1000000 --currency "Rs." --min-share 0.10 --max-share 0.35
+streamlit run app.py                # dashboard
+python -m pytest -q                 # tests
 ```
 
-`--budget` sets the **daily** budget used by the optimizer (it defaults to the historical daily spend), while `--campaign-budget` is the total amount split across platforms in the output.
+`main.py` prints KPIs, benchmark results, the platform recommendation and a campaign-level recommendation, and writes CSV files to `results/` and PNG charts to `charts/`.
 
-Run individual modules:
+## 11. Dataset Generation
+
+Datasets are produced by `data_generator.py`, are deterministic for a given seed, and are written to disk in chunks (the full dataset is never in memory). They are cached with a metadata file recording the record count, seed and generator version; a mismatch triggers regeneration.
 
 ```bash
-python data_generator.py --records 1000000
-python benchmark_analysis.py --scales 100000 --engines pandas mapreduce pyspark
+python data_generator.py --records 10000 100000 1000000 5000000 10000000
 ```
 
-Launch the dashboard:
+The dashboard's **Dataset Management** section does the same with a form and shows a size estimate and a warning for large datasets. The application never generates large datasets on start-up.
+
+### Processing 10 million records
 
 ```bash
-streamlit run app.py
+python main.py --full               # generate, analyse, benchmark all scales
 ```
 
-The dashboard reads the CSVs in `results/` (or files uploaded through its sidebar). **Update dashboard** reloads those files; it does not rerun the analytics pipeline. Rerun `main.py` to regenerate results.
-
-Generated datasets are stored in `data/`; analytical results are written to `results/`; charts are written to `charts/` (change with `--charts-dir`).
-
-### Charts
-
-| File | What it shows |
-|---|---|
-| `01_roas_by_platform.png` | Revenue earned per unit spent, by platform |
-| `02_spend_vs_revenue.png` | Total spend next to total revenue, by platform |
-| `03_budget_share_current_vs_recommended.png` | Current vs recommended budget share, with the share limits |
-| `04_response_curves.png` | Diminishing returns per platform, with current and recommended spend |
-| `05_monthly_revenue_by_platform.png` | Monthly revenue stacked by platform |
-| `06_benchmark_time_and_memory.png` | Runtime and peak memory per engine (only when the benchmark runs) |
-
-## Testing
+or in two steps:
 
 ```bash
-python -m pytest -q
+python data_generator.py --records 10000000     # about 1 GB CSV
+streamlit run app.py                            # choose the 10M dataset in the sidebar
 ```
 
-The suite covers data generation (reproducibility, funnel invariants, weekday and Q4 effects), KPI formulas and edge cases, optimizer correctness (budget, limits, optimality and risk flags), engine agreement, benchmark behavior (skipped and failed engines, memory), the CLI pipeline and dashboard rendering. PySpark tests are skipped automatically when Java or PySpark is unavailable.
+The first analysis of a large file reads it once in 500,000-row chunks and caches the summary tables in `cache/`, so reopening it is instant. Pandas benchmarking at 10M needs roughly 1.5 to 2 GB of free memory; the MapReduce and PySpark engines use far less. Delete `cache/` or use **Rebuild analytics cache** to force a fresh pass.
 
-## Architecture
+## 12. Big Data Processing Methodology
 
-```text
-              data_generator.py
-                      |
-                      v
-             Campaign CSV datasets
-                      |
-          +-----------+-----------+
-          |           |           |
-          v           v           v
-     KPI Analysis  Benchmark   Budget Optimizer
-                   Analysis         |
-          |           |             |
-          v           v             v
-     Platform KPIs  Runtime &   Response Curves
-                    Memory          |
-          |           |             |
-          +-----------+-------------+
-                      |
-                      v
-                    main.py
-                      |
-                      v
-             Results in CSV files
-                      |
-                      v
-                 Streamlit UI
-```
+1. **Chunked reading.** Files are read in fixed-size chunks so memory stays bounded.
+2. **Validation per chunk.** Rows with missing key fields (date, platform, campaign), missing or non-numeric metrics, negative values or funnel violations (clicks above impressions, conversions above clicks) are rejected and counted. Missing descriptive fields (audience, device, age, gender, city) become `Unknown`. Metric handling is configurable (`drop` or `zero`).
+3. **Duplicates.** `assess_csv` finds exact duplicate rows across the whole file by collecting 8-byte row hashes, without keeping the rows themselves. `clean_dataframe` removes them for in-memory frames.
+4. **Dtype optimisation.** `optimize_dtypes` converts low-cardinality text to categoricals and downcasts integers (the dashboard can measure the saving on a sample).
+5. **Efficient aggregation.** Each chunk is reduced to the summary tables, which are merged at the end. Results do not depend on chunk size (tested).
+6. **Caching.** Summaries are cached on disk and invalidated automatically when the dataset file changes.
 
-### Data Generation
+### Measured aggregation on this machine (1 vCPU, 3 GB RAM)
 
-The generator simulates campaigns across Facebook, Google, YouTube, Instagram and TikTok. Each platform has its own CPM, click-through rate, conversion rate, average order value, volume weight and **saturation exponent**. Each record also carries a campaign, audience, device, age group, gender and city.
+| Records | Chunks | Aggregation time | Throughput |
+|---:|---:|---:|---:|
+| 5,000,000 | 10 | 8.8 s | about 568,000 rows/s |
+| 10,000,000 | 20 | 18.7 s | about 535,000 rows/s |
 
-Demand is modeled per day and platform. It combines weekday effects (weaker weekends), seasonality, a fourth-quarter peak (October to December) and a shared daily shock. Conversion efficiency falls as demand rises, at a rate set by the platform's saturation exponent, which produces diminishing returns in the daily totals.
+## 13. Benchmarking Methodology and Results
 
-Counts are generated so that:
+Each engine aggregates the same task: read the CSV, then group by platform, campaign and audience and sum rows, impressions, clicks, spend, conversions and revenue.
 
-$$
-\text{Conversions} \leq \text{Clicks} \leq \text{Impressions}
-$$
+- **Pandas:** reads only the needed columns with explicit dtypes and aggregates with `groupby`.
+- **Simulated MapReduce:** splits the file into line-aligned byte ranges. Spawned worker processes *map* each split, *combine* locally, keys are *partitioned* by CRC32 hash, and reducers *reduce* the partials. It simulates the MapReduce structure on one machine, not a Hadoop cluster.
+- **PySpark:** local mode with an explicit schema and `groupBy().agg()`.
 
-A fixed random seed makes generation reproducible. Datasets are cached with a metadata file that records the record count, seed and generator version; a mismatch triggers regeneration.
+**Isolation.** Every trial runs in a fresh process, so one engine cannot affect another.
 
-### KPI Calculation
+**Cold vs warm.** The first trial is reported separately (`first_trial_seconds`, which can include cold operating-system file caches). `warm_seconds` is the median of the remaining trials, and `seconds` is the median of all trials. Use at least two trials to see the difference.
 
-KPIs are calculated from aggregated totals rather than by averaging row-level ratios.
+**Spark start-up.** JVM and session start-up is measured separately (`startup_seconds`) and excluded from Spark's processing time. It is a real cost for short jobs.
 
-| KPI | Formula |
-|---|---|
-| CTR | $\dfrac{\text{Clicks}}{\text{Impressions}} \times 100$ |
-| CPC | $\dfrac{\text{Spend}}{\text{Clicks}}$ |
-| CPA | $\dfrac{\text{Spend}}{\text{Conversions}}$ |
-| Conversion Rate | $\dfrac{\text{Conversions}}{\text{Clicks}} \times 100$ |
-| ROAS | $\dfrac{\text{Revenue}}{\text{Spend}}$ |
-| CPM | $\dfrac{\text{Spend}}{\text{Impressions}} \times 1000$ |
+**Data loading.** For Pandas and MapReduce, time includes CSV parsing, which usually dominates. The `phases` column splits load vs aggregate (Pandas) and map vs reduce (MapReduce). Spark is lazy and is reported as one phase.
 
-Ratios with a zero denominator return `NaN`. Negative values raise an error, and funnel violations (clicks above impressions, or conversions above clicks) raise a warning. Large files are processed in chunks.
+**Memory.** Peak proportional memory (PSS where available) summed over the worker process tree, sampled every 20 ms. The Spark JVM is included. Very short runs can be under-sampled.
 
-### Benchmark Methodology
+**Throughput.** Records divided by median processing time.
 
-Each engine aggregates the same task: group by platform and campaign, and sum rows, impressions, clicks, spend, conversions and revenue.
+**Correctness.** `consistent` is `yes` only if the output matches the Pandas reference (same groups, row counts and totals within floating-point tolerance).
 
-- **Pandas:** Reads only the needed columns with explicit dtypes and aggregates with `groupby`.
-- **Simulated MapReduce:** Splits the file into line-aligned byte ranges. Worker processes (spawned, so behavior is identical on Linux, macOS and Windows) *map* each split, *combine* locally, *partition* keys by CRC32 hash, and reducers *reduce* the partials. Mappers parse each split with vectorized `read_csv` for speed, so this simulates the MapReduce structure rather than a Hadoop cluster.
-- **PySpark:** Local mode with an explicit schema built from the CSV header and `groupBy().agg()`.
+### Results
 
-Each engine runs in a fresh subprocess, for the requested number of trials. The reported figures are:
+Measured on a 1 vCPU, 4 GB Linux machine with Python 3.12.3, pandas 3.0.2, PySpark 4.3.0 and Java 21, median of 3 trials (10K to 10M, original project run). Processing times exclude PySpark start-up (about 11 s per run).
 
-- `seconds`: median **processing** time. PySpark session start-up is excluded.
-- `startup_seconds`: median engine start-up time, reported separately.
-- `peak_mem_mb`: peak memory of the whole process tree, sampled every 20 ms using proportional set size (PSS), so memory shared between worker processes is not counted twice. The JVM used by Spark is included.
-- `consistent`: `yes` only if all trials agree, the output matches the Pandas reference (same groups, identical row counts, totals equal within floating-point tolerance), and the row count equals the dataset size.
-- `vs_pandas`: speed relative to Pandas (above 1 is faster).
-
-## Dashboard UI
-
-The Streamlit dashboard provides an interface for exploring platform performance, budget recommendations, benchmark timings and memory, and the generated result tables.
-
-![Digital Advertising Budget Optimizer Dashboard](assets/UI-of-ad-budget-optimizer.jpg)
-
-## Budget Optimization
-
-For each platform, historical campaign data is aggregated into daily spend and revenue. A power-law response curve is fitted by log-log regression:
-
-$$
-\text{Revenue} = a \cdot \text{Spend}^{b}
-$$
-
-Here $b$ is the spend elasticity; a lower value means returns diminish faster. The slope is clipped to $[0.05, 0.98]$ so every curve stays concave, and the curve is calibrated to pass through the platform's average daily spend and revenue.
-
-Because every curve is concave, the best split is found exactly rather than by trial and error. The solver equalizes marginal revenue across all platforms that are not held at their minimum or maximum share (a bisection on the marginal-revenue level, then an exact budget correction). A test compares the result against thousands of random feasible allocations.
-
-The model reports uplift two ways:
-
-- **Versus current:** the recommendation compared with today's split.
-- **Versus a limit-compliant baseline:** today's split adjusted just enough to satisfy the share limits. When the current split already breaks a limit, this is the fair comparison, because the limit itself costs revenue.
-
-This approach assumes concave response curves and the simulator's assumptions; it does not guarantee optimal performance in real advertising campaigns.
-
-### Example Budget Recommendation
-
-![Digital Advertising Budget Optimizer - Budget Recommendation](assets/budget-optimizer.jpg)
-
-Output from the 10M-record run with default limits (5% to 40% per platform):
-
-| Platform | Current Share | Recommended Share | Marginal ROAS | Elasticity | Split of Rs. 1,000,000 |
-|---|---:|---:|---:|---:|---:|
-| Facebook | 17.5% | 40.0% | 2.05× | 0.86 | Rs. 400,000 |
-| Google | 50.2% | 40.0% | 3.52× | 0.90 | Rs. 400,000 |
-| YouTube | 9.9% | 7.9% | 1.70× | 0.80 | Rs. 78,965 |
-| Instagram | 16.0% | 7.1% | 1.70× | 0.82 | Rs. 71,035 |
-| TikTok | 6.4% | 5.0% | 1.35× | 0.76 | Rs. 50,000 |
-
-Facebook and Google reach the 40% maximum and TikTok reaches the 5% minimum. Google currently takes more than 50% of spend, so the 40% cap forces money away from the platform with the highest ROAS. That is why the projected uplift is **+4.1% versus the limit-compliant baseline** but **−2.1% versus the current split**, with modeled ROAS moving from 2.99× to 2.93×. Raise `--max-share` if the cap is not a business requirement.
-
-Facebook's recommended daily spend lies above its observed daily range, so its projection is flagged as extrapolation. Treat all figures as simulation-specific, not guaranteed real-world outcomes.
-
-## Benchmark Results
-
-Measured on a 1 vCPU, 4 GB Linux machine with Python 3.12.3, pandas 3.0.2, PySpark 4.3.0 and Java 21, using the median of 3 trials. Results vary with hardware, software versions and workload.
-
-| Records | Pandas | MapReduce | PySpark | Peak Memory: Pandas / MapReduce / Spark |
+| Records | Pandas | MapReduce | PySpark | Peak memory: Pandas / MapReduce / Spark |
 |---:|---:|---:|---:|---:|
 | 10K | 0.03 s | 0.54 s | 8.33 s | 86 / 145 / 499 MB |
 | 100K | 0.13 s | 0.57 s | 9.19 s | 96 / 168 / 526 MB |
 | 1M | 1.23 s | 1.87 s | 11.33 s | 217 / 284 / 524 MB |
 | 10M | 12.04 s | 12.58 s | 29.32 s | 1,310 / 331 / 560 MB |
 
-Processing times exclude PySpark session start-up, which was about 11 s in every run (`startup_seconds` in `benchmark_results.csv`). All engines produced identical results at every scale.
+Additional run at 5M records (1 vCPU, 3 GB, 2 trials, produced while adding the 5M scale):
 
-### Key Observations
+| Records | Engine | Time | First trial | Warm | Start-up | Peak memory | Throughput |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 5M | Pandas | 4.35 s | 4.39 s | 4.32 s | - | 740 MB | 1.15M rows/s |
+| 5M | MapReduce | 4.95 s | 4.93 s | 4.96 s | - | 322 MB | 1.01M rows/s |
+| 5M | PySpark | 13.57 s | 14.01 s | 13.13 s | 8.1 s | 545 MB | 0.37M rows/s |
 
-- **Pandas is fastest at every tested scale** on this machine; its low start-up cost dominates up to 1M records, and at 10M it is only about 4% faster than MapReduce.
-- **Memory scales very differently:** Pandas peaks at about 1.3 GB at 10M records, while the MapReduce implementation, which processes bounded byte splits, stays near 330 MB.
-- **PySpark carries a large fixed cost** (start-up plus job scheduling) that a single core cannot recover at these sizes. Its memory is roughly constant because of the JVM.
-- **MapReduce needs more cores to pay off:** on one core it adds process overhead without parallel speedup.
-- **Measurements are environment-specific** and should not be read as universal rankings of the frameworks. Re-run `python main.py --full` on your own hardware to refresh these figures.
+### Observations (not universal rankings)
 
-## Platform Performance
+- On this single-core machine Pandas was fastest at every size tested; its low start-up cost dominates for small data.
+- Memory behaves differently: Pandas grows with the data (about 1.3 GB at 10M) while MapReduce, which processes bounded byte splits, stays near 330 MB, and Spark is roughly constant because of the JVM.
+- PySpark and MapReduce carry fixed overheads that one core cannot recover. Their advantage depends on core count, data size and storage, none of which were varied here.
+- The cold-versus-warm gap was small in these runs; the benchmark page shows it per configuration.
+- Re-run `python main.py --full` (or use the dashboard's runner) on your own hardware to refresh these figures.
 
-KPI results from the 10M-record simulation:
+## 14. Budget Optimization Methodology
 
-| Platform | CTR | CPC | CPA | Conversion Rate | ROAS |
-|---|---:|---:|---:|---:|---:|
-| Google | 3.01% | $0.74 | $19.17 | 3.86% | 3.83× |
-| Facebook | 1.20% | $0.72 | $23.40 | 3.06% | 2.67× |
-| YouTube | 0.80% | $1.14 | $36.10 | 3.15% | 2.04× |
-| Instagram | 1.00% | $0.99 | $38.77 | 2.55% | 1.79× |
-| TikTok | 1.45% | $0.38 | $27.66 | 1.37% | 1.67× |
+**Response model.** For each platform, history is aggregated to daily spend and revenue and fitted with a power law by log-log regression:
 
-Google has the highest average ROAS. TikTok has the lowest CPC but also the lowest ROAS. These differences show why budget decisions should consider marginal returns and constraints rather than a single KPI.
+$$\text{Revenue} = a \cdot \text{Spend}^{b}$$
 
-## Limitations
+`b` is the spend elasticity (lower means returns diminish faster). It is clipped to [0.05, 0.98] so each curve stays concave, and the curve is calibrated to the platform's observed average daily spend and revenue.
 
-- **Synthetic data:** Simulated campaigns do not capture real-world attribution, creative quality, audience overlap or platform reporting differences.
-- **Simplified response curves:** Spend is the only driver of revenue; cross-platform interactions are not modeled.
-- **Limited historical coverage:** Recommendations are unreliable when projected spend falls far outside the observed range. The optimizer flags these cases.
-- **Small samples bias toward linear returns:** At 10K records each platform has only a few rows per day, so row-count noise dominates the daily totals and curve fits are weaker (the pipeline flags R² below 0.80).
-- **Benchmark environment:** One-core results do not represent a multi-core workstation or cluster, and MapReduce here is a local simulation, not Hadoop.
-- **Memory sampling:** Peak memory is sampled every 20 ms, so very short runs may miss brief spikes.
-- **Model validation:** A good fit on synthetic data does not establish predictive accuracy on real campaigns. Real deployments need held-out data, controlled experiments and ongoing monitoring.
+**Platform level.** The best split is found exactly: marginal revenue is equalised across platforms that are not held at their minimum or maximum share (bisection on the marginal-revenue level plus an exact budget correction). Tests compare the result with thousands of random feasible allocations.
 
-## Future Improvements
+**Campaign level (new).** A single campaign has too little history for its own elasticity, so each campaign inherits its platform's `b` (partial pooling) and gets its own coefficient `a` from its own results. The allocation maximises estimated revenue subject to:
 
-- Validate recommendations against held-out campaign data.
-- Add confidence intervals and sensitivity analysis for budget allocations.
-- Compare serial and parallel processing on machines with different core counts.
-- Support exporting reports directly from the dashboard.
-- Evaluate the optimizer on real, appropriately attributed campaign data before using it for business decisions.
+- platform share limits (default 5% to 40%, solved exactly with group constraints),
+- an optional absolute minimum and maximum budget per campaign,
+- a maximum percentage change from each campaign's current budget (default 50%). This is a trust region: curves are only reliable near spend levels the data has seen, and nearly linear campaigns would otherwise absorb the whole budget.
+
+The solution satisfies the optimality conditions (equal marginal ROAS for unconstrained campaigns within a platform), which the tests verify. Share-only limits at campaign level were tried first and rejected: they concentrated 75% of the budget on one platform.
+
+**Explanations.** Every campaign gets a performance tier (High performer / Average / Underperformer, based on historical ROAS versus the portfolio, +/-15%), an action (Increase / Decrease / Hold), the binding constraint if any, and a written reason.
+
+**Historical vs estimated.** The dashboard separates *observed* results (average daily spend, revenue, ROAS) from *model-based estimates* after reallocation. Uplift is reported against the raw current mix and against a limit-compliant baseline; when the current split already breaks a limit (for example Google above 40%), the second is the fair comparison.
+
+**Assumptions.** Spend is the only driver of revenue, the observed relationship persists, and there are no cross-platform effects, creative fatigue or competition effects. The figures are estimates and carry no guarantee of any revenue increase. Recommendations that fall outside the observed spend range are flagged as extrapolation.
+
+### Example platform recommendation (10M-record run, default limits)
+
+| Platform | Current share | Recommended share | Marginal ROAS | Elasticity |
+|---|---:|---:|---:|---:|
+| Facebook | 17.5% | 40.0% | 2.05x | 0.86 |
+| Google | 50.2% | 40.0% | 3.52x | 0.90 |
+| YouTube | 9.9% | 7.9% | 1.70x | 0.80 |
+| Instagram | 16.0% | 7.1% | 1.70x | 0.82 |
+| TikTok | 6.4% | 5.0% | 1.35x | 0.76 |
+
+Google's 50% current share exceeds the 40% cap, so the projected change is **+4.1% versus the limit-compliant baseline** but **-2.1% versus the raw current split**. Raise `--max-share` if the cap is not a business requirement.
+
+## 15. Advertising Visualization Features
+
+- **Campaign information** for every campaign: name, ID, platform, objective, status, start and end dates, target audience, budget and total spend. A campaign is one platform, objective and audience combination. Status is derived from delivery (Active within 30 days of the end of the data, Paused within 90, otherwise Completed); the budget is a simulated planning figure.
+- **Ad previews** in a platform-appropriate layout (Facebook feed, Instagram, TikTok vertical, YouTube video ad, Google search ad) with headline, description, call to action, platform, audience and objective. Creatives are generated deterministically from the campaign definition and are **simulated illustrations**; every preview carries a visible "simulated" label.
+- **Performance:** impressions, clicks, CTR, CPC, conversions, conversion rate, CPA, revenue, ROAS and CPM, with deltas against the platform average.
+- **Charts** (all built from processed data, never hard-coded): spend and revenue over time, campaign and platform comparison, ROAS and CTR comparison, budget distribution, conversion trends, and original-vs-optimised budget and revenue.
+
+## 16. Sentiment Integration Methodology
+
+The sentiment module (`sentiment.py`, dashboard section *Sentiment Analytics*) is optional and independent of the advertising dataset. It accepts a CSV of labelled comments with these fields (common alternative names such as `label`, `comment`, `published_at` and `like_count` are recognised):
+
+| Field | Required | Use |
+|---|---|---|
+| `sentiment` | yes | Positive, Neutral or Negative (also `pos`, `neu`, `neg`) |
+| `comment_text` | no | The comment |
+| `video_id` | no | Needed for a video-to-campaign mapping |
+| `campaign_id` | no | Direct link to a campaign |
+| `timestamp` | no | Enables sentiment trends |
+| `likes` | no | Like counts |
+
+**Validation:** rows with a missing or unrecognised label are dropped and counted; unparseable timestamps become empty and invalid like counts become 0 (reported, not hidden); exact duplicate comments are removed. Unusable files raise a clear error.
+
+**Analytics:** distribution, net sentiment ((positive - negative) / total), and trends over time when timestamps exist.
+
+**Linking rules.** No relationship is ever inferred. Comments are linked to campaigns only through (a) a `campaign_id` column that matches a campaign in the selected dataset, or (b) a user-supplied `video_id` to `campaign_id` mapping file. If neither exists or nothing matches, sentiment is shown on its own with an explanation. Combined views only use campaigns with at least 30 linked comments, report association rather than cause, and say so on screen.
+
+**Connecting Project 1:** export its labelled comments to CSV with those columns and upload it, adding a mapping file if the videos correspond to campaigns. No code changes are needed.
+
+## 17. Testing
+
+```bash
+python -m pytest -q
+python -m pytest tests/test_campaign_optimizer.py -q     # a single area
+```
+
+The suite covers data generation (reproducibility, funnel invariants, seasonality), data validation and cleaning, KPI formulas and edge cases, chunked aggregation and caching, campaign catalog and creatives, platform and campaign optimisation (budget conservation, limits, optimality, infeasible inputs), sentiment ingestion and linking, engine agreement, benchmark behaviour, the CLI pipeline and every dashboard section. PySpark tests are skipped automatically when Java or PySpark is unavailable. The MapReduce and PySpark tests start worker processes, so on a single-core machine the full suite takes several minutes.
+
+## 18. Screenshots
+
+The images below are real outputs of this project. The dashboard screenshot predates the nine-section redesign; capture new screenshots with `streamlit run app.py` and store them in `docs/screenshots/`.
+
+| Previous dashboard version | Budget recommendation output |
+|---|---|
+| ![Dashboard (previous version)](assets/UI-of-ad-budget-optimizer.jpg) | ![Budget recommendation](assets/budget-optimizer.jpg) |
+
+Sample of the **simulated** creative artwork generated by `creatives.py` (Facebook, Instagram and YouTube formats):
+
+![Simulated creative artwork sample](assets/simulated-creative-artwork-sample.png)
+
+Static charts produced by `main.py` are written to `charts/` (ROAS by platform, spend vs revenue, budget shares, response curves, monthly revenue and benchmark time and memory).
+
+## 19. Limitations
+
+- **Simulated data.** Relationships reflect the generator, not real markets, attribution or platform reporting. Budgets and creatives are simulated.
+- **Simplified response model.** Spend is the only driver of revenue; there are no cross-platform, creative-fatigue or competition effects. Campaign curves share their platform's elasticity.
+- **Extrapolation risk.** Recommendations outside the observed spend range are unreliable; the optimiser flags them and the campaign change limit reduces the risk.
+- **Small samples.** At 10K records each platform has only a few rows per day, so curve fits are weak (flagged when R2 is below 0.80).
+- **No uncertainty intervals** are attached to projected revenue.
+- **Benchmark scope.** Results come from one single-core machine; MapReduce is a local simulation, not Hadoop; memory is sampled, so brief spikes can be missed.
+- **Sentiment.** Matching depends entirely on user-supplied identifiers; association across a few campaigns is not evidence of causation.
+- **Dashboard and large data.** The first analysis of a very large file takes time (cached afterwards), and live Pandas benchmarking at 10M needs enough RAM.
+
+## 20. Future Improvements
+
+- Confidence intervals and sensitivity analysis for budget recommendations.
+- Validation against held-out and, eventually, real attributed campaign data.
+- Benchmarks across machines with different core counts and a real Spark cluster.
+- Campaign-specific elasticity once enough history exists.
+- Direct import of the YouTube sentiment project's output and a shared campaign identifier.
+- Export of dashboard reports.
 
 ---
 
-**Note:** The benchmark, KPI and budget tables show one particular run. Re-run the pipeline and update these figures whenever the code, data-generation settings, dependencies or benchmark environment change.
+The benchmark and optimisation tables show particular runs. Re-run the pipeline and update them whenever the code, data settings, dependencies or hardware change.
